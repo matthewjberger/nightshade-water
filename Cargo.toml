@@ -14,7 +14,7 @@ name = "water"
 path = "src/main.rs"
 
 [dependencies]
-nightshade = { git = "https://github.com/matthewjberger/nightshade", branch = "main" }
+nightshade = "0.56.0"
 bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

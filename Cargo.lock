@@ -2201,8 +2201,9 @@ dependencies = [
 
 [[package]]
 name = "nightshade"
-version = "0.53.0"
-source = "git+https://github.com/matthewjberger/nightshade?branch=main#8793e5339251b077c7b5c6cbf4f4f6bdcd8ed267"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a285a302b036d2aad2108f9c86c0c7187b6204cf3fd1ad966927b81d0b2dc96"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2255,8 +2256,9 @@ dependencies = [
 
 [[package]]
 name = "nightshade-renderer"
-version = "0.53.0"
-source = "git+https://github.com/matthewjberger/nightshade?branch=main#8793e5339251b077c7b5c6cbf4f4f6bdcd8ed267"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be3086d78268f4a2fa9c1366858837873e0df17ea82a0066e2be9d41486eac40"
 dependencies = [
  "bytemuck",
  "cosmic-text",
