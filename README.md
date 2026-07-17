@@ -1,77 +1,88 @@
 # Nightshade Water
 
-A GPU-driven port of [Evan Wallace's WebGL Water](https://madebyevan.com/webgl-water/)
-to the [Nightshade](https://github.com/matthewjberger/nightshade) engine, built
-on the app-layer render-graph API.
+I ported [Evan Wallace's WebGL Water](https://madebyevan.com/webgl-water/) to the
+[Nightshade](https://github.com/matthewjberger/nightshade) engine, GPU and all.
+It runs in the app layer through the render graph API, so the engine itself is
+untouched.
 
-Like the original, the ripple height field is simulated on the GPU: compute
-shaders advance the field over ping-pong textures every frame, and a custom
-render pass draws the water volume by sampling that state directly on the GPU.
-The pool is HDR-lit with image-based lighting, the tiles are a PBR material, and
-the beach ball is a glTF model that floats and rolls in the water.
+The ripple height field runs on the GPU. Compute shaders step the field across a
+pair of ping-pong textures every frame, and a custom render pass draws the water
+by sampling that state on the GPU. The pool is lit from an HDR environment, the
+tiles use a PBR material, and the beach ball is a glTF model that floats, bobs,
+and rolls in the water.
 
 ## Controls
 
 | Input | Action |
 |-------|--------|
-| Click / drag the pool | Add ripples |
-| Drag the ball | Move it (it displaces water and rolls) |
+| Click or drag the pool | Add ripples |
+| Drag the ball | Move it (it pushes water and rolls) |
 | Drag outside the pool | Orbit the camera |
 | Scroll | Zoom |
 | `Space` | Pause |
-| `Q` / `Esc` | Quit |
+| `Q` or `Esc` | Quit |
+
+There is a small panel in the top left:
+
+- **Rain** scatters drops across the surface and turns on falling rain particles.
+- **Reset** flattens the pool.
+- **Walls** shows or hides the two pool walls.
+- **Ball** shows or hides the beach ball.
 
 ## Run
 
 ```bash
-# native
-just run
-
-# web (WebGPU)
-just run-wasm
+just run        # native
+just run-wasm   # web (WebGPU)
 ```
 
-> WebGPU runs in Chromium-based browsers (Chrome, Brave, Vivaldi, Edge) and in
-> Firefox 141+.
+WebGPU works in Chromium browsers (Chrome, Brave, Vivaldi, Edge) and Firefox 141+.
 
 ## How it works
 
-The water is entirely GPU-driven, added at the app layer as a custom
-`PassNode` through `App::add_render_graph_config` — no engine changes.
+The water is a custom `PassNode` registered with `App::add_render_graph_config`.
+None of it touches the engine.
 
-- **`src/water_pass.rs`** — the `WaterGpuPass`. It owns two ping-pong
-  `Rgba16Float` storage textures (packing height, velocity, and normal), the
-  compute pipelines, and the water render pipeline. Each frame `execute` clears
-  the state on the first frame, runs the `update` compute pass (the wave
-  equation and the ball/drop displacement) and the `normals` compute pass in
-  separate passes so the writes are barriered, then draws the displaced grid
-  volume, alpha blended into `scene_color`.
-- **`src/shaders/water_sim.wgsl`** — the compute simulation, ported from the
-  original: `v += (avg − h) · 2; v ·= 0.995; h += v` with a reflective boundary,
-  plus raised-cosine drops and the moving-sphere volume displacement.
-- **`src/shaders/water_surface.wgsl`** — the surface: the vertex stage samples
-  the height texture to displace the grid (top surface and skirts to the floor),
-  the fragment stage uses the simulated normals for fresnel/specular and tints
-  by depth so the pool reads as filled with water.
-- **`src/plugin.rs`** — `WaterPlugin`: builds the scene, registers the pass, and
-  feeds interaction (ripple drops, the draggable/rolling ball with buoyancy)
-  into the pass through a shared `WaterParams` handle. Systems take `Res`/
-  `ResMut` params for engine resources.
-- **`src/scene.rs`** — the tiled pool, the glTF ball, the HDR environment, the
-  camera, and the help overlay. The PBR tile normal map is generated from the
-  tile albedo at startup.
+`src/water_pass.rs` holds the `WaterGpuPass`. It owns two `Rgba16Float` ping-pong
+textures that pack height, velocity, and the surface normal, the compute
+pipelines, and the render pipeline. Each frame it steps the simulation on a fixed
+clock so ripple speed does not depend on frame rate, runs the `update` and
+`normals` compute passes separately so the writes are ordered, then draws the
+caustics quad and the water grid.
 
-## What is and isn't ported
+`src/shaders/water_sim.wgsl` is the simulation, ported straight from the
+original: `v += (avg - h) * 2`, `v *= 0.995`, `h += v` with a reflective
+boundary, raised-cosine drops, and the moving-sphere volume displacement that
+pushes water around the ball.
 
-Ported and GPU-driven: the ripple simulation (compute ping-pong), the water
-render, drop injection, the moving sphere's displacement, buoyancy, and the
-tiled pool.
+`src/shaders/water_surface.wgsl` draws the surface. The vertex stage samples the
+height texture to displace the grid and drops skirts down to the floor so the
+pool looks filled. The fragment stage uses the simulated normals for fresnel and
+specular and tints by depth.
 
-Not ported: the original's screen-space caustics and its analytic ray-traced
-reflection/refraction. The surface here reflects the HDR environment and reads
-the scene through alpha blending.
+`src/shaders/caustics.wgsl` adds light to the floor from the height field. Where
+the surface is concave it focuses light, so the pass brightens the floor by the
+positive Laplacian of the height.
+
+`src/plugin.rs` is `WaterPlugin`. It builds the scene, registers the pass, and
+feeds interaction into it through a shared `WaterParams` handle: ripple drops,
+the draggable ball with buoyancy and rolling, rain, and reset. Systems take `Res`
+and `ResMut` params for engine resources.
+
+`src/scene.rs` builds the tiled pool, the glTF ball, the HDR environment, the
+camera, the control panel, and the help text. The tile normal map is generated
+from the albedo at startup.
+
+## What is and isn't here
+
+On the GPU: the ripple simulation, the water render, drop injection, the sphere
+displacement, the caustics, and buoyancy.
+
+Left out: the original's analytic ray-traced reflection and refraction. The
+surface reflects the HDR environment and reads the scene behind it through alpha
+blending instead.
 
 ## License
 
-Licensed under either of Apache-2.0 or MIT, at your option. The original WebGL
-Water is MIT, Copyright 2011 Evan Wallace.
+Apache-2.0 or MIT, your choice. The original WebGL Water is MIT, Copyright 2011
+Evan Wallace.
