@@ -18,6 +18,9 @@ const EXTENT: f32 = 6.0;
 const WATER_LEVEL: f32 = 0.0;
 const HEIGHT_SCALE: f32 = 8.0;
 const FLOOR_Y: f32 = -5.8;
+/// Fixed simulation rate so ripple speed is independent of the frame rate.
+const STEP_HZ: f32 = 60.0;
+const MAX_STEPS_PER_FRAME: u32 = 4;
 
 /// Interaction state written by the app each frame and read by the pass.
 #[derive(Clone, Copy)]
@@ -82,6 +85,7 @@ pub struct WaterGpuPass {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     seed_frames: u32,
+    step_accumulator: f32,
 }
 
 fn build_grid(resolution: u32) -> (Vec<[f32; 3]>, Vec<u32>) {
@@ -377,7 +381,7 @@ impl WaterGpuPass {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
+                depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -434,6 +438,7 @@ impl WaterGpuPass {
             index_buffer,
             index_count: indices.len() as u32,
             seed_frames: 40,
+            step_accumulator: 0.0,
         }
     }
 }
@@ -550,27 +555,40 @@ impl PassNode<RenderInputs> for WaterGpuPass {
             }
         }
 
-        {
-            let mut compute = context
-                .encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Water Update"),
-                    timestamp_writes: None,
-                });
-            compute.set_pipeline(&self.update_pipeline);
-            compute.set_bind_group(0, &self.update_bind_group, &[]);
-            compute.dispatch_workgroups(workgroups, workgroups, 1);
+        self.step_accumulator += configs.view.delta_time.max(0.0);
+        let step_dt = 1.0 / STEP_HZ;
+        let mut steps = (self.step_accumulator / step_dt).floor() as u32;
+        steps = steps.min(MAX_STEPS_PER_FRAME);
+        if self.seed_frames > 0 {
+            steps = steps.max(1);
         }
-        {
-            let mut compute = context
-                .encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Water Normals"),
-                    timestamp_writes: None,
-                });
-            compute.set_pipeline(&self.normals_pipeline);
-            compute.set_bind_group(0, &self.normals_bind_group, &[]);
-            compute.dispatch_workgroups(workgroups, workgroups, 1);
+        self.step_accumulator = (self.step_accumulator - steps as f32 * step_dt).max(0.0);
+
+        for _ in 0..steps {
+            {
+                let mut compute =
+                    context
+                        .encoder
+                        .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Water Update"),
+                            timestamp_writes: None,
+                        });
+                compute.set_pipeline(&self.update_pipeline);
+                compute.set_bind_group(0, &self.update_bind_group, &[]);
+                compute.dispatch_workgroups(workgroups, workgroups, 1);
+            }
+            {
+                let mut compute =
+                    context
+                        .encoder
+                        .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Water Normals"),
+                            timestamp_writes: None,
+                        });
+                compute.set_pipeline(&self.normals_pipeline);
+                compute.set_bind_group(0, &self.normals_bind_group, &[]);
+                compute.dispatch_workgroups(workgroups, workgroups, 1);
+            }
         }
 
         let (color_view, color_load, color_store) = context.get_color_attachment("color")?;

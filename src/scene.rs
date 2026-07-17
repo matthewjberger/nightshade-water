@@ -21,7 +21,9 @@ const TILE_NORMAL_TEXTURE: &str = "pool_tiles_normal";
 const TILE_BYTES: &[u8] = include_bytes!("../assets/tiles.jpg");
 const BALL_GLB: &[u8] = include_bytes!("../assets/beach_ball.glb");
 const ENV_HDR: &[u8] = include_bytes!("../assets/env.hdr");
-const BALL_SCALE: f32 = 1.5;
+/// Visual scale of the ball model. The glTF is authored at unit radius, so this
+/// tracks the physics radius and the two stay in sync.
+const BALL_SCALE: f32 = SPHERE_RADIUS;
 
 /// Loads the HDR skybox and spawns the key light. Render settings are set by
 /// the initialize system through its resource params.
@@ -70,13 +72,13 @@ pub fn spawn_pool(world: &mut World) {
     let span = POOL_HALF * 2.0 + 0.8;
     let walls = [
         (
-            "pool_wall_south",
-            Vec3::new(0.0, wall_center, -POOL_HALF - 0.3),
+            "pool_wall_north",
+            Vec3::new(0.0, wall_center, POOL_HALF + 0.3),
             Vec3::new(span, wall_height, 0.4),
         ),
         (
-            "pool_wall_west",
-            Vec3::new(-POOL_HALF - 0.3, wall_center, 0.0),
+            "pool_wall_east",
+            Vec3::new(POOL_HALF + 0.3, wall_center, 0.0),
             Vec3::new(0.4, wall_height, span),
         ),
     ];
@@ -108,7 +110,7 @@ pub fn spawn_camera(world: &mut World) -> Entity {
         world,
         Vec3::new(0.0, -1.0, 0.0),
         22.0,
-        0.7,
+        0.7 + std::f32::consts::PI,
         0.5,
         "Camera".to_string(),
     )
