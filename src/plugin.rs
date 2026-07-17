@@ -119,10 +119,12 @@ fn initialize(
     mut active_camera: ResMut<ActiveCamera>,
     world: &mut World,
 ) {
-    render_settings.show_sky = false;
+    render_settings.atmosphere = Atmosphere::Hdr;
+    render_settings.show_sky = true;
     render_settings.bloom_enabled = false;
     debug_draw.show_grid = false;
 
+    scene::load_environment(world);
     state.rain_emitter = scene::spawn_rain_emitter(world);
     let camera = scene::spawn_camera(world);
     active_camera.0 = Some(camera);

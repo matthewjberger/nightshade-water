@@ -12,6 +12,14 @@ pub const WATER_Y: f32 = 0.0;
 /// Ball radius in the normalized space (matches the original demo).
 pub const SPHERE_RADIUS: f32 = 0.25;
 
+const ENV_HDR: &[u8] = include_bytes!("../assets/env.hdr");
+
+/// Loads the HDR skybox so the engine draws it behind the pool. The water pass
+/// reflects the same environment.
+pub fn load_environment(world: &mut World) {
+    load_hdr_skybox(world, ENV_HDR.to_vec());
+}
+
 /// Spawns the orbit camera framing the pool and returns its entity. The
 /// initialize system activates it through its `ActiveCamera` param.
 pub fn spawn_camera(world: &mut World) -> Entity {

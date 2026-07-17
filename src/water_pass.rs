@@ -27,11 +27,7 @@ const MAX_STEPS_PER_FRAME: u32 = 4;
 
 const HELPERS: &str = include_str!("shaders/helpers.wgsl");
 const TILE_BYTES: &[u8] = include_bytes!("../assets/tiles.jpg");
-const SKY_POS_X: &[u8] = include_bytes!("../assets/xpos.jpg");
-const SKY_NEG_X: &[u8] = include_bytes!("../assets/xneg.jpg");
-const SKY_POS_Y: &[u8] = include_bytes!("../assets/ypos.jpg");
-const SKY_POS_Z: &[u8] = include_bytes!("../assets/zpos.jpg");
-const SKY_NEG_Z: &[u8] = include_bytes!("../assets/zneg.jpg");
+const ENV_HDR: &[u8] = include_bytes!("../assets/env.hdr");
 
 /// Interaction state written by the app each frame and read by the pass.
 #[derive(Clone, Copy)]
@@ -243,13 +239,37 @@ fn decode_image(bytes: &[u8]) -> DecodedImage {
     }
 }
 
+/// A decoded HDR equirectangular image stored as packed Rgba16Float texels.
+struct HdrImage {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+fn decode_hdr(bytes: &[u8]) -> HdrImage {
+    let decoded = image::load_from_memory(bytes)
+        .expect("decode hdr")
+        .to_rgba32f();
+    let (width, height) = decoded.dimensions();
+    let halves: Vec<u16> = decoded
+        .into_raw()
+        .iter()
+        .map(|value| half::f16::from_f32(*value).to_bits())
+        .collect();
+    HdrImage {
+        bytes: bytemuck::cast_slice(&halves).to_vec(),
+        width,
+        height,
+    }
+}
+
 /// Textures whose pixels are uploaded on the first frame, when a queue is
 /// available (the render-graph config hook only hands us a device).
 struct PendingUploads {
     tile_texture: wgpu::Texture,
     tile: DecodedImage,
     sky_texture: wgpu::Texture,
-    sky_faces: Vec<DecodedImage>,
+    sky: HdrImage,
 }
 
 fn write_layer(queue: &wgpu::Queue, texture: &wgpu::Texture, layer: u32, image: &DecodedImage) {
@@ -295,21 +315,43 @@ fn create_2d_texture(device: &wgpu::Device, label: &str, width: u32, height: u32
     })
 }
 
-fn create_sky_cube(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+fn create_equirect_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Water Sky Cube"),
+        label: Some("Water Sky Equirect"),
         size: wgpu::Extent3d {
             width,
             height,
-            depth_or_array_layers: 6,
+            depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
+}
+
+fn write_equirect(queue: &wgpu::Queue, texture: &wgpu::Texture, image: &HdrImage) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &image.bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(8 * image.width),
+            rows_per_image: Some(image.height),
+        },
+        wgpu::Extent3d {
+            width: image.width,
+            height: image.height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 struct PipelineConfig<'a> {
@@ -381,23 +423,15 @@ impl WaterGpuPass {
         let tile_texture = create_2d_texture(device, "Water Tiles", tile.width, tile.height);
         let tile_view = tile_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let sky_faces: Vec<DecodedImage> =
-            [SKY_POS_X, SKY_NEG_X, SKY_POS_Y, SKY_POS_Y, SKY_POS_Z, SKY_NEG_Z]
-                .iter()
-                .map(|bytes| decode_image(bytes))
-                .collect();
-        let sky_texture = create_sky_cube(device, sky_faces[0].width, sky_faces[0].height);
-        let sky_view = sky_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Water Sky Cube View"),
-            dimension: Some(wgpu::TextureViewDimension::Cube),
-            ..Default::default()
-        });
+        let sky = decode_hdr(ENV_HDR);
+        let sky_texture = create_equirect_texture(device, sky.width, sky.height);
+        let sky_view = sky_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let pending = Some(PendingUploads {
             tile_texture,
             tile,
             sky_texture,
-            sky_faces,
+            sky,
         });
 
         let caustic_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -451,8 +485,8 @@ impl WaterGpuPass {
             ..Default::default()
         });
         let cube_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Water Cube Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            label: Some("Water Sky Sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
@@ -808,7 +842,7 @@ fn build_render_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             texture_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT, wgpu::TextureViewDimension::D2),
             texture_entry(2, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
             texture_entry(3, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
-            texture_entry(4, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::Cube),
+            texture_entry(4, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
             sampler_entry(5, wgpu::ShaderStages::VERTEX_FRAGMENT),
             sampler_entry(6, wgpu::ShaderStages::FRAGMENT),
             sampler_entry(7, wgpu::ShaderStages::FRAGMENT),
@@ -845,9 +879,7 @@ impl PassNode<RenderInputs> for WaterGpuPass {
 
         if let Some(pending) = self.pending.take() {
             write_layer(context.queue, &pending.tile_texture, 0, &pending.tile);
-            for (layer, face) in pending.sky_faces.iter().enumerate() {
-                write_layer(context.queue, &pending.sky_texture, layer as u32, face);
-            }
+            write_equirect(context.queue, &pending.sky_texture, &pending.sky);
         }
 
         let params = {

@@ -9,6 +9,7 @@ const IOR_WATER: f32 = 1.333;
 const ABOVEWATER_COLOR: vec3<f32> = vec3<f32>(0.25, 1.0, 1.25);
 const UNDERWATER_COLOR: vec3<f32> = vec3<f32>(0.4, 0.9, 1.0);
 const POOL_HEIGHT: f32 = 1.0;
+const PI: f32 = 3.141592653589793;
 
 struct RenderUniform {
     view_proj: mat4x4<f32>,
@@ -21,7 +22,7 @@ struct RenderUniform {
 @group(0) @binding(1) var water_tex: texture_2d<f32>;
 @group(0) @binding(2) var tiles_tex: texture_2d<f32>;
 @group(0) @binding(3) var caustic_tex: texture_2d<f32>;
-@group(0) @binding(4) var sky_tex: texture_cube<f32>;
+@group(0) @binding(4) var sky_tex: texture_2d<f32>;
 @group(0) @binding(5) var samp_clamp: sampler;
 @group(0) @binding(6) var samp_repeat: sampler;
 @group(0) @binding(7) var samp_cube: sampler;

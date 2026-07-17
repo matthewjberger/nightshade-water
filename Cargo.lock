@@ -4211,6 +4211,7 @@ name = "water"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "half",
  "nightshade",
  "wasm-bindgen",
  "wasm-bindgen-futures",
