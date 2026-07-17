@@ -87,7 +87,6 @@ pub struct WaterGpuPass {
     caustics_pipeline: wgpu::RenderPipeline,
     caustics_vertex_buffer: wgpu::Buffer,
     caustics_index_buffer: wgpu::Buffer,
-    seed_frames: u32,
     step_accumulator: f32,
 }
 
@@ -517,7 +516,6 @@ impl WaterGpuPass {
             caustics_pipeline,
             caustics_vertex_buffer,
             caustics_index_buffer,
-            seed_frames: 40,
             step_accumulator: 0.0,
         }
     }
@@ -552,22 +550,7 @@ impl PassNode<RenderInputs> for WaterGpuPass {
 
         let params = *self.params.lock().unwrap();
 
-        let mut drop = params;
-        if self.seed_frames > 0 {
-            self.seed_frames -= 1;
-            let seed = self.seed_frames as f32;
-            drop.drop_active = true;
-            drop.drop_center = [
-                0.5 + 0.35 * (seed * 0.7).cos(),
-                0.5 + 0.35 * (seed * 0.7).sin(),
-            ];
-            drop.drop_radius = 0.04;
-            drop.drop_strength = if self.seed_frames.is_multiple_of(2) {
-                0.02
-            } else {
-                -0.02
-            };
-        }
+        let drop = params;
 
         let sim = SimUniform {
             drop: [
@@ -637,11 +620,7 @@ impl PassNode<RenderInputs> for WaterGpuPass {
 
         self.step_accumulator += configs.view.delta_time.max(0.0);
         let step_dt = 1.0 / STEP_HZ;
-        let mut steps = (self.step_accumulator / step_dt).floor() as u32;
-        steps = steps.min(MAX_STEPS_PER_FRAME);
-        if self.seed_frames > 0 {
-            steps = steps.max(1);
-        }
+        let steps = ((self.step_accumulator / step_dt).floor() as u32).min(MAX_STEPS_PER_FRAME);
         self.step_accumulator = (self.step_accumulator - steps as f32 * step_dt).max(0.0);
 
         for _ in 0..steps {
