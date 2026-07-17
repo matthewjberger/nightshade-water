@@ -2,14 +2,14 @@
 
 I ported [Evan Wallace's WebGL Water](https://madebyevan.com/webgl-water/) to the
 [Nightshade](https://github.com/matthewjberger/nightshade) engine, GPU and all.
-It runs in the app layer through the render graph API, so the engine itself is
-untouched.
+The pool, the water, and the ball are drawn by ray tracing the way the original
+does, added at the app layer through the render graph API.
 
 The ripple height field runs on the GPU. Compute shaders step the field across a
-pair of ping-pong textures every frame, and a custom render pass draws the water
-by sampling that state on the GPU. The pool is lit from an HDR environment, the
-tiles use a PBR material, and the beach ball is a glTF model that floats, bobs,
-and rolls in the water.
+pair of ping-pong textures every frame. A custom render pass then traces the
+scene in the normalized pool space where the pool spans [-1, 1] in x and z, the
+floor sits at y = -1, and the water rests at y = 0. The pool reflects an HDR
+environment, and the ball is a beach ball that floats, bobs, and rolls.
 
 ## Controls
 
@@ -25,9 +25,8 @@ and rolls in the water.
 There is a small panel in the top left:
 
 - **Rain** scatters drops across the surface and turns on falling rain particles.
-- **Reset** flattens the pool.
-- **Walls** shows or hides the two pool walls.
 - **Ball** shows or hides the beach ball.
+- **Reset** flattens the pool.
 
 ## Run
 
@@ -40,47 +39,54 @@ WebGPU works in Chromium browsers (Chrome, Brave, Vivaldi, Edge) and Firefox 141
 
 ## How it works
 
-The water is a custom `PassNode` registered with `App::add_render_graph_config`.
-None of it touches the engine.
+The whole scene is a custom `PassNode` registered with
+`App::add_render_graph_config`. It draws the pool, the water, and the ball
+itself, so nothing but the camera, the HDR skybox, the rain particles, and the
+UI lives in the ECS scene.
 
-`src/water_pass.rs` holds the `WaterGpuPass`. It owns two `Rgba16Float` ping-pong
-textures that pack height, velocity, and the surface normal, the compute
-pipelines, and the render pipeline. Each frame it steps the simulation on a fixed
-clock so ripple speed does not depend on frame rate, runs the `update` and
-`normals` compute passes separately so the writes are ordered, then draws the
-caustics quad and the water grid.
+`src/water_pass.rs` holds the `WaterGpuPass`. It owns the ping-pong state
+textures, the compute pipelines, a caustics texture, and the render pipelines for
+the pool, the water, and the ball. Each frame it steps the simulation on a fixed
+clock so ripple speed does not depend on frame rate, projects the caustics
+texture, then traces the pool, the water surface, and the ball into the scene.
 
 `src/shaders/water_sim.wgsl` is the simulation, ported straight from the
 original: `v += (avg - h) * 2`, `v *= 0.995`, `h += v` with a reflective
 boundary, raised-cosine drops, and the moving-sphere volume displacement that
 pushes water around the ball.
 
-`src/shaders/water_surface.wgsl` draws the surface. The vertex stage samples the
-height texture to displace the grid and drops skirts down to the floor so the
-pool looks filled. The fragment stage uses the simulated normals for fresnel and
-specular and tints by depth.
+`src/shaders/helpers.wgsl` carries the shared tracing code: the cube and sphere
+intersection, the tiled walls with their ambient occlusion and projected
+caustics, and the ball shading. It is prepended to the render shaders.
 
-`src/shaders/caustics.wgsl` adds light to the floor from the height field. Where
-the surface is concave it focuses light, so the pass brightens the floor by the
-positive Laplacian of the height.
+`src/shaders/water_surface.wgsl` traces the surface. For each fragment it casts a
+reflected ray into the HDR sky with a sun glint and a refracted ray into the
+tiled pool and the ball, then blends them by fresnel. It draws in two culling
+passes so the underwater view is correct when the camera dips below the surface.
 
-`src/plugin.rs` is `WaterPlugin`. It builds the scene, registers the pass, and
-feeds interaction into it through a shared `WaterParams` handle: ripple drops,
-the draggable ball with buoyancy and rolling, rain, and reset. Systems take `Res`
-and `ResMut` params for engine resources.
+`src/shaders/pool.wgsl` and `src/shaders/sphere.wgsl` draw the walls and the ball
+with the same shared shading, tinted below the waterline. The near walls are
+removed by backface culling as the camera orbits.
 
-`src/scene.rs` builds the tiled pool, the glTF ball, the HDR environment, the
-camera, the control panel, and the help text. The tile normal map is generated
-from the albedo at startup.
+`src/shaders/caustics.wgsl` projects each water vertex along the refracted
+sunlight onto the floor and measures the triangle area change with screen-space
+derivatives. Light that focuses onto a smaller area is brighter. The result
+lights the floor, the walls, and the ball and carries the ball's blob shadow.
 
-## What is and isn't here
+`src/plugin.rs` is `WaterPlugin`. It feeds interaction into the pass through a
+shared `WaterParams` handle: ripple drops, the draggable ball with buoyancy and
+rolling, rain, and reset.
 
-On the GPU: the ripple simulation, the water render, drop injection, the sphere
-displacement, the caustics, and buoyancy.
+`src/scene.rs` sets up the camera, the HDR skybox, the rain emitter, the control
+panel, and the help text.
 
-Left out: the original's analytic ray-traced reflection and refraction. The
-surface reflects the HDR environment and reads the scene behind it through alpha
-blending instead.
+## Notes
+
+Reflection, refraction, and the projected caustics are all here, traced the way
+the original does them. The ball is a procedural beach ball on the traced sphere
+rather than a model, so it can carry the same caustics, ambient occlusion, and
+underwater tint everywhere it appears, including in the water's reflection and
+refraction.
 
 ## License
 
