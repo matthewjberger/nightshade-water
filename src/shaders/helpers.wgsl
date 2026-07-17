@@ -68,16 +68,33 @@ fn intersect_sphere(origin: vec3<f32>, ray: vec3<f32>, center: vec3<f32>, radius
     return 1.0e6;
 }
 
+fn beach_ball_color(normal: vec3<f32>) -> vec3<f32> {
+    if abs(normal.y) > 0.82 {
+        return vec3<f32>(0.95, 0.95, 0.95);
+    }
+    let longitude = atan2(normal.z, normal.x) / (2.0 * PI) + 0.5;
+    let index = u32(floor(longitude * 6.0)) % 6u;
+    var palette = array<vec3<f32>, 6>(
+        vec3<f32>(0.90, 0.16, 0.16),
+        vec3<f32>(0.98, 0.60, 0.12),
+        vec3<f32>(0.96, 0.86, 0.16),
+        vec3<f32>(0.20, 0.70, 0.28),
+        vec3<f32>(0.16, 0.42, 0.86),
+        vec3<f32>(0.95, 0.95, 0.95),
+    );
+    return palette[index];
+}
+
 fn get_sphere_color(point: vec3<f32>) -> vec3<f32> {
     let radius = sphere_radius();
     let center = sphere_center();
-    var color = vec3<f32>(0.5);
+    let sphere_normal = (point - center) / radius;
+    var color = beach_ball_color(sphere_normal);
 
     color *= 1.0 - 0.9 / pow((1.0 + radius - abs(point.x)) / radius, 3.0);
     color *= 1.0 - 0.9 / pow((1.0 + radius - abs(point.z)) / radius, 3.0);
     color *= 1.0 - 0.9 / pow((point.y + 1.0 + radius) / radius, 3.0);
 
-    let sphere_normal = (point - center) / radius;
     let refracted_light = refract(-light_dir(), vec3<f32>(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
     var diffuse = max(0.0, dot(-refracted_light, sphere_normal)) * 0.5;
     if point.y < water_height(point.xz * 0.5 + 0.5) {
