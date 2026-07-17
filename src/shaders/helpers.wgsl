@@ -16,6 +16,7 @@ struct RenderUniform {
     eye: vec4<f32>,
     light: vec4<f32>,
     sphere: vec4<f32>,
+    rotation: mat3x3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: RenderUniform;
@@ -68,21 +69,25 @@ fn intersect_sphere(origin: vec3<f32>, ray: vec3<f32>, center: vec3<f32>, radius
     return 1.0e6;
 }
 
-fn beach_ball_color(normal: vec3<f32>) -> vec3<f32> {
-    if abs(normal.y) > 0.82 {
+fn beach_ball_color(world_normal: vec3<f32>) -> vec3<f32> {
+    let normal = transpose(u.rotation) * world_normal;
+    if abs(normal.y) > 0.9 {
         return vec3<f32>(0.95, 0.95, 0.95);
     }
-    let longitude = atan2(normal.z, normal.x) / (2.0 * PI) + 0.5;
-    let index = u32(floor(longitude * 6.0)) % 6u;
+    let scaled = (atan2(normal.z, normal.x) / (2.0 * PI) + 0.5) * 6.0;
+    let index = u32(floor(scaled)) % 6u;
     var palette = array<vec3<f32>, 6>(
-        vec3<f32>(0.90, 0.16, 0.16),
-        vec3<f32>(0.98, 0.60, 0.12),
-        vec3<f32>(0.96, 0.86, 0.16),
-        vec3<f32>(0.20, 0.70, 0.28),
-        vec3<f32>(0.16, 0.42, 0.86),
+        vec3<f32>(0.88, 0.15, 0.16),
+        vec3<f32>(0.97, 0.62, 0.12),
+        vec3<f32>(0.96, 0.86, 0.18),
+        vec3<f32>(0.16, 0.68, 0.32),
+        vec3<f32>(0.14, 0.40, 0.86),
         vec3<f32>(0.95, 0.95, 0.95),
     );
-    return palette[index];
+    var color = palette[index];
+    let edge = fract(scaled);
+    let seam = smoothstep(0.0, 0.035, edge) * smoothstep(0.0, 0.035, 1.0 - edge);
+    return color * mix(0.5, 1.0, seam);
 }
 
 fn get_sphere_color(point: vec3<f32>) -> vec3<f32> {

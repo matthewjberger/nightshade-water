@@ -43,6 +43,7 @@ pub struct WaterState {
     ball_center: Vec3,
     ball_previous_center: Vec3,
     ball_velocity: Vec3,
+    ball_rotation: Quat,
     drag_mode: DragMode,
     drag_plane_normal: Vec3,
     drag_prev_hit: Vec3,
@@ -84,6 +85,7 @@ impl Plugin for WaterPlugin {
             ball_center: Vec3::new(BALL_START[0], BALL_START[1], BALL_START[2]),
             ball_previous_center: Vec3::new(BALL_START[0], BALL_START[1], BALL_START[2]),
             ball_velocity: Vec3::zeros(),
+            ball_rotation: Quat::identity(),
             drag_mode: DragMode::None,
             drag_plane_normal: Vec3::new(0.0, 0.0, 1.0),
             drag_prev_hit: Vec3::zeros(),
@@ -229,6 +231,9 @@ fn simulate(mut state: ResMut<WaterState>, time: Res<Time>) {
     if !state.paused && state.ball_present && state.drag_mode != DragMode::Ball {
         step_ball_physics(&mut state, delta);
     }
+    if !state.paused && state.ball_present {
+        apply_ball_rotation(&mut state, delta);
+    }
 
     if state.rain_enabled && !state.paused {
         state.rain_accumulator += delta;
@@ -262,6 +267,16 @@ fn simulate(mut state: ResMut<WaterState>, time: Res<Time>) {
     params.sphere_old = [sphere_previous.x, sphere_previous.y, sphere_previous.z];
     params.sphere_new = [sphere_center.x, sphere_center.y, sphere_center.z];
     params.sphere_radius = SPHERE_RADIUS;
+    let rotation = nalgebra_glm::quat_to_mat3(&state.ball_rotation);
+    let column = |index: usize| {
+        [
+            rotation.column(index)[0],
+            rotation.column(index)[1],
+            rotation.column(index)[2],
+            0.0,
+        ]
+    };
+    params.sphere_rotation = [column(0), column(1), column(2)];
     params.sphere_visible = state.ball_present;
     if state.reset_requested {
         params.reset = true;
@@ -330,6 +345,27 @@ fn step_ball_physics(state: &mut WaterState, delta: f32) {
     let limit = 1.0 - radius;
     state.ball_center.x = state.ball_center.x.clamp(-limit, limit);
     state.ball_center.z = state.ball_center.z.clamp(-limit, limit);
+}
+
+fn apply_ball_rotation(state: &mut WaterState, delta: f32) {
+    let drift_axis = nalgebra_glm::normalize(&Vec3::new(0.25, 1.0, 0.15));
+    state.ball_rotation =
+        nalgebra_glm::quat_angle_axis(0.35 * delta, &drift_axis) * state.ball_rotation;
+
+    let motion = state.ball_center - state.ball_previous_center;
+    let horizontal = Vec3::new(motion.x, 0.0, motion.z);
+    let distance = horizontal.norm();
+    if distance > 1.0e-6 {
+        let direction = horizontal / distance;
+        let axis = nalgebra_glm::cross(&Vec3::new(0.0, 1.0, 0.0), &direction);
+        let axis_length = axis.norm();
+        if axis_length > 1.0e-6 {
+            let angle = distance / SPHERE_RADIUS;
+            let roll = nalgebra_glm::quat_angle_axis(angle, &(axis / axis_length));
+            state.ball_rotation = roll * state.ball_rotation;
+        }
+    }
+    state.ball_rotation = nalgebra_glm::quat_normalize(&state.ball_rotation);
 }
 
 fn grab_plane(state: &WaterState, world: &World, cursor: Vec2) -> Option<(Vec3, Vec3)> {

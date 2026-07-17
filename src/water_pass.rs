@@ -39,6 +39,7 @@ pub struct WaterParams {
     pub sphere_old: [f32; 3],
     pub sphere_new: [f32; 3],
     pub sphere_radius: f32,
+    pub sphere_rotation: [[f32; 4]; 3],
     pub sphere_visible: bool,
     pub reset: bool,
 }
@@ -53,6 +54,11 @@ impl Default for WaterParams {
             sphere_old: [-0.4, -0.75, 0.2],
             sphere_new: [-0.4, -0.75, 0.2],
             sphere_radius: 0.25,
+            sphere_rotation: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
             sphere_visible: true,
             reset: false,
         }
@@ -75,6 +81,7 @@ struct RenderUniform {
     eye: [f32; 4],
     light: [f32; 4],
     sphere: [f32; 4],
+    rotation: [[f32; 4]; 3],
 }
 
 pub struct WaterGpuPass {
@@ -932,6 +939,7 @@ impl PassNode<RenderInputs> for WaterGpuPass {
                 params.sphere_new[2],
                 params.sphere_radius,
             ],
+            rotation: params.sphere_rotation,
         };
         context
             .queue
