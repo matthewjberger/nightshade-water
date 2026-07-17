@@ -27,7 +27,7 @@ fn volume_in_sphere(plane_x: f32, plane_z: f32, center: vec3<f32>, radius: f32) 
     let thickness = exp(-pow(t * 1.5, 6.0));
     let y_min = min(0.0, center.y - thickness);
     let y_max = min(max(0.0, center.y + thickness), y_min + 2.0 * thickness);
-    return (y_max - y_min) * 0.13;
+    return (y_max - y_min) * 0.1;
 }
 
 @compute @workgroup_size(8, 8, 1)
