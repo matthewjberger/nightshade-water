@@ -58,7 +58,8 @@ pub fn load_textures(world: &mut World) {
 }
 
 /// Builds the tiled pool box: floor and two walls, open on the near sides.
-pub fn spawn_pool(world: &mut World) {
+/// Returns the two wall entities so their visibility can be toggled.
+pub fn spawn_pool(world: &mut World) -> Vec<Entity> {
     let floor = spawn_mesh(
         world,
         "Cube",
@@ -82,10 +83,14 @@ pub fn spawn_pool(world: &mut World) {
             Vec3::new(0.4, wall_height, span),
         ),
     ];
-    for (name, position, scale) in walls {
-        let wall = spawn_mesh(world, "Cube", position, scale);
-        set_material(world, wall, name.to_string(), tile_material(1.0));
-    }
+    walls
+        .into_iter()
+        .map(|(name, position, scale)| {
+            let wall = spawn_mesh(world, "Cube", position, scale);
+            set_material(world, wall, name.to_string(), tile_material(1.0));
+            wall
+        })
+        .collect()
 }
 
 /// Spawns the beach-ball glTF at a world position and returns its root entity.
@@ -116,15 +121,93 @@ pub fn spawn_camera(world: &mut World) -> Entity {
     )
 }
 
+/// Handles to the interactive widgets in the control panel.
+pub struct Controls {
+    pub rain: Entity,
+    pub walls: Entity,
+    pub ball: Entity,
+    pub reset: Entity,
+}
+
+/// Builds the retained-UI control panel and returns its widget handles.
+pub fn spawn_controls(world: &mut World) -> Controls {
+    let mut tree = UiTreeBuilder::new(world);
+    let panel = tree.add_floating_panel(
+        "water_controls",
+        "Water",
+        Rect {
+            min: Vec2::new(16.0, 16.0),
+            max: Vec2::new(210.0, 180.0),
+        },
+    );
+    let content = widget::<UiPanelData>(tree.world_mut(), panel)
+        .map(|data| data.content_entity)
+        .unwrap_or(panel);
+    let mut controls = Controls {
+        rain: Entity::default(),
+        walls: Entity::default(),
+        ball: Entity::default(),
+        reset: Entity::default(),
+    };
+    tree.in_parent(content, |tree| {
+        controls.rain = tree.add_checkbox("Rain", false);
+        controls.walls = tree.add_checkbox("Walls", true);
+        controls.ball = tree.add_checkbox("Ball", true);
+        controls.reset = tree.add_button("Reset");
+    });
+    tree.finish();
+    controls
+}
+
+/// Spawns a rain particle emitter above the pool, initially disabled. The drops
+/// fall over the water surface where the height field reacts to their impact.
+pub fn spawn_rain_emitter(world: &mut World) -> Entity {
+    use nightshade::render::particles::{
+        ColorGradient, EmitterShape, EmitterType, ParticleEmitter,
+    };
+    let position = Vec3::new(0.0, WORLD_SCALE * 1.4, 0.0);
+    let emitter = ParticleEmitter {
+        emitter_type: EmitterType::Sparks,
+        shape: EmitterShape::Box {
+            half_extents: Vec3::new(POOL_HALF, 0.1, POOL_HALF),
+        },
+        position,
+        direction: Vec3::new(0.0, -1.0, 0.0),
+        spawn_rate: 160.0,
+        burst_count: 0,
+        particle_lifetime_min: 1.0,
+        particle_lifetime_max: 1.6,
+        initial_velocity_min: 5.0,
+        initial_velocity_max: 7.0,
+        velocity_spread: 0.02,
+        gravity: Vec3::new(0.0, -14.0, 0.0),
+        drag: 0.0,
+        size_start: 0.05,
+        size_end: 0.02,
+        color_gradient: ColorGradient {
+            colors: vec![
+                (0.0, Vec4::new(0.7, 0.85, 1.0, 0.9)),
+                (1.0, Vec4::new(0.5, 0.7, 0.95, 0.0)),
+            ],
+        },
+        emissive_strength: 0.0,
+        enabled: false,
+        one_shot: false,
+        ..Default::default()
+    };
+    let entity = spawn_entities(world, nightshade::ecs::PARTICLE_EMITTER, 1)[0];
+    world.set(entity, emitter);
+    entity
+}
+
 /// Draws the static control legend.
 pub fn spawn_help(world: &mut World) {
     let lines = [
-        "Nightshade Water",
         "Drag the pool: ripples    Drag the ball: move it",
         "Drag outside the pool: orbit    Scroll: zoom",
         "Space: pause    Q or Esc: quit",
     ];
-    let mut y = 18.0;
+    let mut y = 196.0;
     for (index, line) in lines.iter().enumerate() {
         let font_size = if index == 0 { 26.0 } else { 18.0 };
         spawn_ui_text_with_properties(

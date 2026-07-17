@@ -32,6 +32,8 @@ pub struct WaterParams {
     pub sphere_old: [f32; 3],
     pub sphere_new: [f32; 3],
     pub sphere_radius: f32,
+    /// Requests the pass to clear the height field back to a flat pool.
+    pub reset: bool,
 }
 
 impl Default for WaterParams {
@@ -44,6 +46,7 @@ impl Default for WaterParams {
             sphere_old: [0.0, -1.0, 0.0],
             sphere_new: [0.0, -1.0, 0.0],
             sphere_radius: 0.25,
+            reset: false,
         }
     }
 }
@@ -548,7 +551,12 @@ impl PassNode<RenderInputs> for WaterGpuPass {
             None => return Ok(context.into_sub_graph_commands()),
         };
 
-        let params = *self.params.lock().unwrap();
+        let params = {
+            let mut guard = self.params.lock().unwrap();
+            let snapshot = *guard;
+            guard.reset = false;
+            snapshot
+        };
 
         let drop = params;
 
@@ -602,8 +610,9 @@ impl PassNode<RenderInputs> for WaterGpuPass {
 
         let workgroups = SIM_SIZE.div_ceil(8);
 
-        if !self.cleared {
+        if !self.cleared || params.reset {
             self.cleared = true;
+            self.step_accumulator = 0.0;
             for bind_group in [&self.update_bind_group, &self.normals_bind_group] {
                 let mut compute =
                     context

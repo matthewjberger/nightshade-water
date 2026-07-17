@@ -1,14 +1,21 @@
 //! The water demo plugin: builds the scene, registers the GPU water pass, and
 //! feeds interaction (ripple drops, the draggable ball) into it.
 
-use crate::scene::{self, POOL_HALF, SPHERE_RADIUS, SPHERE_SIM_RADIUS, WORLD_SCALE};
+use crate::scene::{self, Controls, POOL_HALF, SPHERE_RADIUS, SPHERE_SIM_RADIUS, WORLD_SCALE};
 use crate::water_pass::{WaterGpuPass, WaterParams};
 use nightshade::ecs::camera::components::PanOrbitCamera;
+use nightshade::ecs::primitives::Visibility;
+use nightshade::ecs::transform::queries::query_descendants;
 use nightshade::prelude::*;
+use nightshade::render::particles::ParticleEmitter;
 use std::sync::{Arc, Mutex};
 
 const DROP_RADIUS: f32 = 0.03;
 const DROP_STRENGTH: f32 = 0.02;
+const RAIN_DROP_RADIUS: f32 = 0.024;
+const RAIN_DROP_STRENGTH: f32 = 0.012;
+/// Seconds between scattered rain drops on the height field.
+const RAIN_INTERVAL: f32 = 0.045;
 const BALL_START: [f32; 3] = [-0.4, -0.5, 0.2];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -19,11 +26,22 @@ enum DragMode {
     Orbit,
 }
 
+/// A single ripple to inject into the height field, in texture UV space.
+#[derive(Clone, Copy)]
+struct DropSpec {
+    center: Vec2,
+    radius: f32,
+    strength: f32,
+}
+
 /// App-wide state for the demo.
 pub struct WaterState {
     params: Arc<Mutex<WaterParams>>,
     ball_entity: Entity,
     camera_entity: Entity,
+    wall_entities: Vec<Entity>,
+    rain_emitter: Entity,
+    controls: Controls,
     ball_center: Vec3,
     ball_previous_center: Vec3,
     ball_velocity: Vec3,
@@ -31,8 +49,22 @@ pub struct WaterState {
     drag_mode: DragMode,
     drag_plane_normal: Vec3,
     drag_prev_hit: Vec3,
-    pending_drop: Option<Vec2>,
+    pending_drop: Option<DropSpec>,
     paused: bool,
+    rain_enabled: bool,
+    ball_present: bool,
+    reset_requested: bool,
+    rain_accumulator: f32,
+    rng: u32,
+}
+
+fn next_random(state: &mut u32) -> f32 {
+    let mut value = *state;
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    *state = value;
+    (value >> 8) as f32 / (1 << 24) as f32
 }
 
 /// The demo plugin.
@@ -47,6 +79,14 @@ impl Plugin for WaterPlugin {
             params: params.clone(),
             ball_entity: Entity::default(),
             camera_entity: Entity::default(),
+            wall_entities: Vec::new(),
+            rain_emitter: Entity::default(),
+            controls: Controls {
+                rain: Entity::default(),
+                walls: Entity::default(),
+                ball: Entity::default(),
+                reset: Entity::default(),
+            },
             ball_center: Vec3::new(BALL_START[0], BALL_START[1], BALL_START[2]),
             ball_previous_center: Vec3::new(BALL_START[0], BALL_START[1], BALL_START[2]),
             ball_velocity: Vec3::zeros(),
@@ -56,6 +96,11 @@ impl Plugin for WaterPlugin {
             drag_prev_hit: Vec3::zeros(),
             pending_drop: None,
             paused: false,
+            rain_enabled: false,
+            ball_present: true,
+            reset_requested: false,
+            rain_accumulator: 0.0,
+            rng: 0x9e37_79b9,
         });
 
         let graph_params = params;
@@ -90,15 +135,40 @@ fn initialize(
 
     scene::load_environment(world);
     scene::load_textures(world);
-    scene::spawn_pool(world);
+    state.wall_entities = scene::spawn_pool(world);
     state.ball_entity = scene::spawn_ball(world, ball_world_position(state.ball_center));
+    state.rain_emitter = scene::spawn_rain_emitter(world);
     let camera = scene::spawn_camera(world);
     active_camera.0 = Some(camera);
     state.camera_entity = camera;
+    state.controls = scene::spawn_controls(world);
     scene::spawn_help(world);
 }
 
 fn handle_input(mut state: ResMut<WaterState>, input: Res<Input>, world: &mut World) {
+    for event in ui_events(world).to_vec() {
+        match event {
+            UiEvent::CheckboxChanged { entity, value } if entity == state.controls.rain => {
+                state.rain_enabled = value;
+                set_emitter_enabled(world, state.rain_emitter, value);
+            }
+            UiEvent::CheckboxChanged { entity, value } if entity == state.controls.walls => {
+                let walls = state.wall_entities.clone();
+                for wall in walls {
+                    world.set(wall, Visibility { visible: value });
+                }
+            }
+            UiEvent::CheckboxChanged { entity, value } if entity == state.controls.ball => {
+                state.ball_present = value;
+                set_ball_visible(world, state.ball_entity, value);
+            }
+            UiEvent::ButtonClicked(entity) if entity == state.controls.reset => {
+                state.reset_requested = true;
+            }
+            _ => {}
+        }
+    }
+
     let mouse = input.mouse;
     let cursor = mouse.position;
     let left_pressed = mouse.state.contains(MouseState::LEFT_JUST_PRESSED);
@@ -169,10 +239,14 @@ fn handle_input(mut state: ResMut<WaterState>, input: Res<Input>, world: &mut Wo
                 && point.x.abs() <= POOL_HALF
                 && point.z.abs() <= POOL_HALF
             {
-                state.pending_drop = Some(Vec2::new(
-                    (point.x / POOL_HALF) * 0.5 + 0.5,
-                    (point.z / POOL_HALF) * 0.5 + 0.5,
-                ));
+                state.pending_drop = Some(DropSpec {
+                    center: Vec2::new(
+                        (point.x / POOL_HALF) * 0.5 + 0.5,
+                        (point.z / POOL_HALF) * 0.5 + 0.5,
+                    ),
+                    radius: DROP_RADIUS,
+                    strength: DROP_STRENGTH,
+                });
             }
         }
         DragMode::None | DragMode::Orbit => {}
@@ -181,44 +255,76 @@ fn handle_input(mut state: ResMut<WaterState>, input: Res<Input>, world: &mut Wo
 
 fn simulate(mut state: ResMut<WaterState>, time: Res<Time>, world: &mut World) {
     let delta = time.delta_time.min(0.05);
-    if !state.paused {
+    if !state.paused && state.ball_present {
         if state.drag_mode == DragMode::Ball {
             state.ball_velocity = Vec3::zeros();
         } else {
             step_ball_physics(&mut state, delta);
         }
         apply_ball_rotation(&mut state, delta);
+
+        if let Some(transform) = world.get_mut::<LocalTransform>(state.ball_entity) {
+            transform.translation = ball_world_position(state.ball_center);
+            transform.rotation = state.ball_rotation;
+        }
     }
 
-    if let Some(transform) = world.get_mut::<LocalTransform>(state.ball_entity) {
-        transform.translation = ball_world_position(state.ball_center);
-        transform.rotation = state.ball_rotation;
+    if state.rain_enabled && !state.paused {
+        state.rain_accumulator += delta;
+        if state.rain_accumulator >= RAIN_INTERVAL && state.pending_drop.is_none() {
+            state.rain_accumulator = 0.0;
+            let center = Vec2::new(next_random(&mut state.rng), next_random(&mut state.rng));
+            state.pending_drop = Some(DropSpec {
+                center,
+                radius: RAIN_DROP_RADIUS,
+                strength: RAIN_DROP_STRENGTH,
+            });
+        }
+    } else {
+        state.rain_accumulator = 0.0;
     }
 
     let params_handle = state.params.clone();
     let mut params = params_handle.lock().unwrap();
-    params.sphere_old = [
-        state.ball_previous_center.x,
-        state.ball_previous_center.y,
-        state.ball_previous_center.z,
-    ];
-    params.sphere_new = [
-        state.ball_center.x,
-        state.ball_center.y,
-        state.ball_center.z,
-    ];
+    if state.ball_present {
+        params.sphere_old = [
+            state.ball_previous_center.x,
+            state.ball_previous_center.y,
+            state.ball_previous_center.z,
+        ];
+        params.sphere_new = [
+            state.ball_center.x,
+            state.ball_center.y,
+            state.ball_center.z,
+        ];
+    } else {
+        params.sphere_old = [
+            state.ball_center.x,
+            state.ball_center.y,
+            state.ball_center.z,
+        ];
+        params.sphere_new = [
+            state.ball_center.x,
+            state.ball_center.y,
+            state.ball_center.z,
+        ];
+    }
     params.sphere_radius = SPHERE_SIM_RADIUS;
+    if state.reset_requested {
+        params.reset = true;
+    }
     match state.pending_drop.take() {
-        Some(uv) if !state.paused => {
+        Some(drop_spec) if !state.paused => {
             params.drop_active = true;
-            params.drop_center = [uv.x, uv.y];
-            params.drop_radius = DROP_RADIUS;
-            params.drop_strength = DROP_STRENGTH;
+            params.drop_center = [drop_spec.center.x, drop_spec.center.y];
+            params.drop_radius = drop_spec.radius;
+            params.drop_strength = drop_spec.strength;
         }
         _ => params.drop_active = false,
     }
     drop(params);
 
+    state.reset_requested = false;
     state.ball_previous_center = state.ball_center;
 }
 
@@ -228,8 +334,23 @@ fn update_title(state: Res<WaterState>, time: Res<Time>, mut window: ResMut<Wind
     window.title = format!("Nightshade Water | {fps:.0} FPS | {status}");
 }
 
+fn set_emitter_enabled(world: &mut World, emitter: Entity, enabled: bool) {
+    if let Some(component) = world.get_mut::<ParticleEmitter>(emitter) {
+        component.enabled = enabled;
+    }
+}
+
+fn set_ball_visible(world: &mut World, ball: Entity, visible: bool) {
+    world.set(ball, Visibility { visible });
+    for descendant in query_descendants(world, ball) {
+        world.set(descendant, Visibility { visible });
+    }
+}
+
 fn classify_press(state: &WaterState, world: &World, cursor: Vec2) -> DragMode {
-    if let Some(ray) = PickingRay::from_screen_position(world, cursor) {
+    if state.ball_present
+        && let Some(ray) = PickingRay::from_screen_position(world, cursor)
+    {
         let ball = ball_world_position(state.ball_center);
         if ray_hits_sphere(ray.origin, ray.direction, ball, SPHERE_RADIUS) {
             return DragMode::Ball;
