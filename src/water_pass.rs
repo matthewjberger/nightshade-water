@@ -23,7 +23,7 @@ const SPHERE_SLICES: u32 = 48;
 const RIM_Y: f32 = 2.0 / 12.0;
 const FLOOR_Y: f32 = -1.0;
 const STEP_HZ: f32 = 60.0;
-const MAX_STEPS_PER_FRAME: u32 = 4;
+const MAX_STEPS_PER_FRAME: u32 = 8;
 
 const HELPERS: &str = include_str!("shaders/helpers.wgsl");
 const TILE_BYTES: &[u8] = include_bytes!("../assets/tiles.jpg");
@@ -90,6 +90,7 @@ pub struct WaterGpuPass {
     render_uniform: wgpu::Buffer,
     clear_pipeline: wgpu::ComputePipeline,
     update_pipeline: wgpu::ComputePipeline,
+    inject_pipeline: wgpu::ComputePipeline,
     normals_pipeline: wgpu::ComputePipeline,
     update_bind_group: wgpu::BindGroup,
     normals_bind_group: wgpu::BindGroup,
@@ -470,8 +471,14 @@ impl WaterGpuPass {
             mapped_at_creation: false,
         });
 
-        let (clear_pipeline, update_pipeline, normals_pipeline, update_bind_group, normals_bind_group) =
-            build_compute(device, &state_a, &state_b, &sim_uniform);
+        let (
+            clear_pipeline,
+            update_pipeline,
+            inject_pipeline,
+            normals_pipeline,
+            update_bind_group,
+            normals_bind_group,
+        ) = build_compute(device, &state_a, &state_b, &sim_uniform);
 
         let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Water Clamp Sampler"),
@@ -502,60 +509,80 @@ impl WaterGpuPass {
         });
 
         let render_layout = build_render_layout(device);
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Water Render Pipeline Layout"),
-            bind_group_layouts: &[Some(&render_layout)],
-            immediate_size: 0,
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Water Render Pipeline Layout"),
+                bind_group_layouts: &[Some(&render_layout)],
+                immediate_size: 0,
+            });
 
-        let make_render_bind_group = |water: &wgpu::TextureView, caustic: &wgpu::TextureView, label: &str| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout: &render_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: render_uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(water),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&tile_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(caustic),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&sky_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&clamp_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::Sampler(&repeat_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::Sampler(&cube_sampler),
-                    },
-                ],
-            })
-        };
-        let render_bind_group = make_render_bind_group(&state_a, &caustic_view, "Water Render Bind Group");
-        let caustics_bind_group = make_render_bind_group(&state_a, &state_b, "Water Caustics Bind Group");
+        let make_render_bind_group =
+            |water: &wgpu::TextureView, caustic: &wgpu::TextureView, label: &str| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &render_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: render_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(water),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&tile_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(caustic),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(&sky_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::Sampler(&clamp_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 6,
+                            resource: wgpu::BindingResource::Sampler(&repeat_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 7,
+                            resource: wgpu::BindingResource::Sampler(&cube_sampler),
+                        },
+                    ],
+                })
+            };
+        let render_bind_group =
+            make_render_bind_group(&state_a, &caustic_view, "Water Render Bind Group");
+        let caustics_bind_group =
+            make_render_bind_group(&state_a, &state_b, "Water Caustics Bind Group");
 
         let helper_source = |main: &str| format!("{HELPERS}\n{main}");
-        let pool_shader = compile_wgsl(device, "pool.wgsl", &helper_source(include_str!("shaders/pool.wgsl")));
-        let sphere_shader = compile_wgsl(device, "sphere.wgsl", &helper_source(include_str!("shaders/sphere.wgsl")));
-        let surface_shader = compile_wgsl(device, "water_surface.wgsl", &helper_source(include_str!("shaders/water_surface.wgsl")));
-        let caustics_shader = compile_wgsl(device, "caustics.wgsl", &helper_source(include_str!("shaders/caustics.wgsl")));
+        let pool_shader = compile_wgsl(
+            device,
+            "pool.wgsl",
+            &helper_source(include_str!("shaders/pool.wgsl")),
+        );
+        let sphere_shader = compile_wgsl(
+            device,
+            "sphere.wgsl",
+            &helper_source(include_str!("shaders/sphere.wgsl")),
+        );
+        let surface_shader = compile_wgsl(
+            device,
+            "water_surface.wgsl",
+            &helper_source(include_str!("shaders/water_surface.wgsl")),
+        );
+        let caustics_shader = compile_wgsl(
+            device,
+            "caustics.wgsl",
+            &helper_source(include_str!("shaders/caustics.wgsl")),
+        );
 
         let pool_pipeline = render_pipeline(
             device,
@@ -687,6 +714,7 @@ impl WaterGpuPass {
             render_uniform,
             clear_pipeline,
             update_pipeline,
+            inject_pipeline,
             normals_pipeline,
             update_bind_group,
             normals_bind_group,
@@ -720,6 +748,7 @@ fn build_compute(
     state_b: &wgpu::TextureView,
     sim_uniform: &wgpu::Buffer,
 ) -> (
+    wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::ComputePipeline,
@@ -762,7 +791,11 @@ fn build_compute(
         ],
     });
 
-    let sim_shader = compile_wgsl(device, "water_sim.wgsl", include_str!("shaders/water_sim.wgsl"));
+    let sim_shader = compile_wgsl(
+        device,
+        "water_sim.wgsl",
+        include_str!("shaders/water_sim.wgsl"),
+    );
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Water Compute Pipeline Layout"),
         bind_group_layouts: &[Some(&compute_layout)],
@@ -780,6 +813,7 @@ fn build_compute(
     };
     let clear_pipeline = make_compute("clear", "Water Clear Pipeline");
     let update_pipeline = make_compute("update", "Water Update Pipeline");
+    let inject_pipeline = make_compute("inject", "Water Inject Pipeline");
     let normals_pipeline = make_compute("normals", "Water Normals Pipeline");
 
     let make_bind_group = |src: &wgpu::TextureView, dst: &wgpu::TextureView, label: &str| {
@@ -808,6 +842,7 @@ fn build_compute(
     (
         clear_pipeline,
         update_pipeline,
+        inject_pipeline,
         normals_pipeline,
         update_bind_group,
         normals_bind_group,
@@ -815,18 +850,19 @@ fn build_compute(
 }
 
 fn build_render_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    let texture_entry = |binding: u32, visibility: wgpu::ShaderStages, dimension: wgpu::TextureViewDimension| {
-        wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: dimension,
-                multisampled: false,
-            },
-            count: None,
-        }
-    };
+    let texture_entry =
+        |binding: u32, visibility: wgpu::ShaderStages, dimension: wgpu::TextureViewDimension| {
+            wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: dimension,
+                    multisampled: false,
+                },
+                count: None,
+            }
+        };
     let sampler_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -846,10 +882,26 @@ fn build_render_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
-            texture_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT, wgpu::TextureViewDimension::D2),
-            texture_entry(2, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
-            texture_entry(3, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
-            texture_entry(4, wgpu::ShaderStages::FRAGMENT, wgpu::TextureViewDimension::D2),
+            texture_entry(
+                1,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture_entry(
+                2,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture_entry(
+                3,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::TextureViewDimension::D2,
+            ),
+            texture_entry(
+                4,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::TextureViewDimension::D2,
+            ),
             sampler_entry(5, wgpu::ShaderStages::VERTEX_FRAGMENT),
             sampler_entry(6, wgpu::ShaderStages::FRAGMENT),
             sampler_entry(7, wgpu::ShaderStages::FRAGMENT),
@@ -951,45 +1003,60 @@ impl PassNode<RenderInputs> for WaterGpuPass {
             self.cleared = true;
             self.step_accumulator = 0.0;
             for bind_group in [&self.update_bind_group, &self.normals_bind_group] {
-                let mut compute = context
-                    .encoder
-                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("Water Clear"),
-                        timestamp_writes: None,
-                    });
+                let mut compute =
+                    context
+                        .encoder
+                        .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Water Clear"),
+                            timestamp_writes: None,
+                        });
                 compute.set_pipeline(&self.clear_pipeline);
                 compute.set_bind_group(0, bind_group, &[]);
                 compute.dispatch_workgroups(workgroups, workgroups, 1);
             }
         }
 
-        self.step_accumulator += configs.view.delta_time.max(0.0);
         let step_dt = 1.0 / STEP_HZ;
+        let max_frame_time = MAX_STEPS_PER_FRAME as f32 * step_dt;
+        self.step_accumulator += configs.view.delta_time.clamp(0.0, max_frame_time);
         let steps = ((self.step_accumulator / step_dt).floor() as u32).min(MAX_STEPS_PER_FRAME);
         self.step_accumulator = (self.step_accumulator - steps as f32 * step_dt).max(0.0);
 
-        for _ in 0..steps {
-            {
-                let mut compute = context
-                    .encoder
-                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("Water Update"),
+        {
+            let encoder = &mut *context.encoder;
+            let mut run =
+                |pipeline: &wgpu::ComputePipeline, bind_group: &wgpu::BindGroup, label: &str| {
+                    let mut compute = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(label),
                         timestamp_writes: None,
                     });
-                compute.set_pipeline(&self.update_pipeline);
-                compute.set_bind_group(0, &self.update_bind_group, &[]);
-                compute.dispatch_workgroups(workgroups, workgroups, 1);
-            }
-            {
-                let mut compute = context
-                    .encoder
-                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("Water Normals"),
-                        timestamp_writes: None,
-                    });
-                compute.set_pipeline(&self.normals_pipeline);
-                compute.set_bind_group(0, &self.normals_bind_group, &[]);
-                compute.dispatch_workgroups(workgroups, workgroups, 1);
+                    compute.set_pipeline(pipeline);
+                    compute.set_bind_group(0, bind_group, &[]);
+                    compute.dispatch_workgroups(workgroups, workgroups, 1);
+                };
+
+            run(
+                &self.inject_pipeline,
+                &self.update_bind_group,
+                "Water Inject",
+            );
+            run(
+                &self.normals_pipeline,
+                &self.normals_bind_group,
+                "Water Normals",
+            );
+
+            for _ in 0..steps {
+                run(
+                    &self.update_pipeline,
+                    &self.update_bind_group,
+                    "Water Update",
+                );
+                run(
+                    &self.normals_pipeline,
+                    &self.normals_bind_group,
+                    "Water Normals",
+                );
             }
         }
 
@@ -1051,11 +1118,13 @@ impl PassNode<RenderInputs> for WaterGpuPass {
 
             render_pass.set_pipeline(&self.pool_pipeline);
             render_pass.set_vertex_buffer(0, self.box_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass
+                .set_index_buffer(self.box_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.box_index_count, 0, 0..1);
 
             render_pass.set_vertex_buffer(0, self.plane_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.plane_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass
+                .set_index_buffer(self.plane_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.set_pipeline(&self.water_under_pipeline);
             render_pass.draw_indexed(0..self.plane_index_count, 0, 0..1);
             render_pass.set_pipeline(&self.water_above_pipeline);
@@ -1064,7 +1133,10 @@ impl PassNode<RenderInputs> for WaterGpuPass {
             if params.sphere_visible {
                 render_pass.set_pipeline(&self.sphere_pipeline);
                 render_pass.set_vertex_buffer(0, self.sphere_vertex_buffer.slice(..));
-                render_pass.set_index_buffer(self.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.set_index_buffer(
+                    self.sphere_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
                 render_pass.draw_indexed(0..self.sphere_index_count, 0, 0..1);
             }
         }

@@ -1,7 +1,9 @@
 // GPU water height-field simulation, ported from Evan Wallace's WebGL Water.
-// State texel packs (height, velocity, normal.x, normal.z). The pass runs
-// `update` reading A into B, then `normals` reading B into A, so A always holds
-// the current state and no swap bookkeeping is needed.
+// State texel packs (height, velocity, normal.x, normal.z). Each stage reads A
+// into B, then `normals` reads B into A, so A always holds the current state.
+// `inject` (drops and the sphere volume) runs once per frame while `update` (the
+// wave step) runs a frame-rate-corrected number of times, so interaction is not
+// multiplied by the number of steps.
 
 struct SimUniform {
     drop: vec4<f32>,          // xy = center in [0,1], z = radius, w = strength
@@ -57,6 +59,18 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     info.g += (average - info.r) * 2.0;
     info.g *= 0.995;
     info.r += info.g;
+
+    textureStore(dst_tex, coord, info);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn inject(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<i32>(textureDimensions(src_tex));
+    if i32(id.x) >= size.x || i32(id.y) >= size.y {
+        return;
+    }
+    let coord = vec2<i32>(i32(id.x), i32(id.y));
+    var info = textureLoad(src_tex, coord, 0);
 
     if sim.flags.x > 0.5 {
         let uv = (vec2<f32>(f32(coord.x), f32(coord.y)) + 0.5) / vec2<f32>(size);
