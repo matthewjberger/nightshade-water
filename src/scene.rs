@@ -137,7 +137,7 @@ pub fn spawn_controls(world: &mut World) -> Controls {
         "Water",
         Rect {
             min: Vec2::new(16.0, 16.0),
-            max: Vec2::new(210.0, 180.0),
+            max: Vec2::new(216.0, 216.0),
         },
     );
     let content = widget::<UiPanelData>(tree.world_mut(), panel)
@@ -173,24 +173,25 @@ pub fn spawn_rain_emitter(world: &mut World) -> Entity {
         },
         position,
         direction: Vec3::new(0.0, -1.0, 0.0),
-        spawn_rate: 160.0,
+        spawn_rate: 450.0,
         burst_count: 0,
-        particle_lifetime_min: 1.0,
-        particle_lifetime_max: 1.6,
-        initial_velocity_min: 5.0,
-        initial_velocity_max: 7.0,
-        velocity_spread: 0.02,
-        gravity: Vec3::new(0.0, -14.0, 0.0),
+        particle_lifetime_min: 0.7,
+        particle_lifetime_max: 0.95,
+        initial_velocity_min: 8.0,
+        initial_velocity_max: 11.0,
+        velocity_spread: 0.03,
+        gravity: Vec3::new(0.0, -20.0, 0.0),
         drag: 0.0,
-        size_start: 0.05,
-        size_end: 0.02,
+        size_start: 0.16,
+        size_end: 0.09,
         color_gradient: ColorGradient {
             colors: vec![
-                (0.0, Vec4::new(0.7, 0.85, 1.0, 0.9)),
-                (1.0, Vec4::new(0.5, 0.7, 0.95, 0.0)),
+                (0.0, Vec4::new(0.85, 0.93, 1.0, 1.0)),
+                (0.7, Vec4::new(0.7, 0.85, 1.0, 0.95)),
+                (1.0, Vec4::new(0.6, 0.8, 1.0, 0.0)),
             ],
         },
-        emissive_strength: 0.0,
+        emissive_strength: 0.7,
         enabled: false,
         one_shot: false,
         ..Default::default()
@@ -207,7 +208,7 @@ pub fn spawn_help(world: &mut World) {
         "Drag outside the pool: orbit    Scroll: zoom",
         "Space: pause    Q or Esc: quit",
     ];
-    let mut y = 196.0;
+    let mut y = 232.0;
     for (index, line) in lines.iter().enumerate() {
         let font_size = if index == 0 { 26.0 } else { 18.0 };
         spawn_ui_text_with_properties(
