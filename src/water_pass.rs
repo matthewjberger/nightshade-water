@@ -84,6 +84,9 @@ pub struct WaterGpuPass {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    caustics_pipeline: wgpu::RenderPipeline,
+    caustics_vertex_buffer: wgpu::Buffer,
+    caustics_index_buffer: wgpu::Buffer,
     seed_frames: u32,
     step_accumulator: f32,
 }
@@ -422,6 +425,80 @@ impl WaterGpuPass {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        let caustics_shader = compile_wgsl(
+            device,
+            "caustics.wgsl",
+            include_str!("shaders/caustics.wgsl"),
+        );
+        let caustics_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Water Caustics Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &caustics_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 8,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &caustics_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let caustics_quad: [[f32; 2]; 4] = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+        let caustics_indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+        let caustics_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Water Caustics Vertices"),
+            contents: bytemuck::cast_slice(&caustics_quad),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let caustics_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Water Caustics Indices"),
+            contents: bytemuck::cast_slice(&caustics_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
         Self {
             params,
             sim_uniform,
@@ -437,6 +514,9 @@ impl WaterGpuPass {
             vertex_buffer,
             index_buffer,
             index_count: indices.len() as u32,
+            caustics_pipeline,
+            caustics_vertex_buffer,
+            caustics_index_buffer,
             seed_frames: 40,
             step_accumulator: 0.0,
         }
@@ -619,8 +699,17 @@ impl PassNode<RenderInputs> for WaterGpuPass {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.render_bind_group, &[]);
+
+            render_pass.set_pipeline(&self.caustics_pipeline);
+            render_pass.set_vertex_buffer(0, self.caustics_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.caustics_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.draw_indexed(0..6, 0, 0..1);
+
+            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.index_count, 0, 0..1);
