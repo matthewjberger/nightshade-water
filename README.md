@@ -1,5 +1,7 @@
 # Nightshade Water
 
+<img width="2560" height="1392" alt="Screenshot 2026-07-18 135346" src="https://github.com/user-attachments/assets/084b5b6d-0b26-4710-ac06-debb8089c03e" />
+
 I ported [Evan Wallace's WebGL Water](https://madebyevan.com/webgl-water/) to the
 [Nightshade](https://github.com/matthewjberger/nightshade) engine, GPU and all.
 The pool, the water, and the ball are drawn by ray tracing the way the original
